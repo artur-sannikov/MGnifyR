@@ -1,6 +1,6 @@
 Package: MGnifyR
 Type: Package
-Version: 0.2.3
+Version: 0.2.4
 Authors@R:
     c(person(given = "Ben", family = "Allen", role = c("aut","cre"),
              email = "ben.allen@ncl.ac.uk"),
@@ -19,7 +19,8 @@ Depends:
     R(>= 4.0),
     mia,
     MultiAssayExperiment,    
-    TreeSummarizedExperiment (>= 1.99.3)
+    TreeSummarizedExperiment (>= 1.99.3),
+    biomformat
 Imports:
     ape,
     dplyr,    

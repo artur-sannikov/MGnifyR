@@ -305,14 +305,17 @@ setMethod("getResult", signature = c(x = "MgnifyClient"), function(
         row_data <- row_data[!duplicated(row_data), , drop = FALSE]
         rownames(row_data) <- row_data[["index_id"]]
         row_data <- row_data[rownames(assay), , drop=FALSE]
-        # Get taxonomy from the information
+        # Get taxonomy from the information (e.g. when the data is taxonomy)
         tax_tab <- mia:::.parse_taxonomy(row_data, column_name = "index_id")
-        # Remove prefixes
-        tax_tab <- mia:::.remove_prefixes_from_taxa(tax_tab)
-        # Replace empty cells with NA
-        tax_tab <- tax_tab %>% mutate_all(na_if, "")
-        # Add taxonomy info to original rowData
-        row_data <- cbind(row_data, tax_tab)
+        # If taxonomy information was found
+        if( ncol(tax_tab) > 0 ){
+            # Remove prefixes
+            tax_tab <- mia:::.remove_prefixes_from_taxa(tax_tab)
+            # Replace empty cells with NA
+            tax_tab <- tax_tab %>% as.data.frame() %>% mutate_all(na_if, "")
+            # Add taxonomy info to original rowData
+            row_data <- cbind(row_data, tax_tab)
+        }
         # If microbiota data exists, order the functional data based on that
         # Do not drop samples that are not found from microbiota data
         if( !is.null(tse_microbiota) ){
@@ -339,15 +342,11 @@ setMethod("getResult", signature = c(x = "MgnifyClient"), function(
 # Helper function for importing microbial profiling data.
 .mgnify_get_analyses_treese <- function(
         client, accession, use.cache, verbose,
-        taxa.su = "SSU", get.tree = FALSE, ...){
+        taxa.su = "SSU", ...){
     ############################### INPUT CHECK ################################
     if( !(.is_non_empty_string(taxa.su)) ){
         stop("'taxa.su' must be a single character value specifying taxa ",
              "subunit.",
-             call. = FALSE)
-    }
-    if( !.is_a_bool(get.tree) ){
-        stop("'get.tree' must be TRUE or FALSE.",
              call. = FALSE)
     }
     ############################# INPUT CHECK END ##############################
@@ -358,8 +357,7 @@ setMethod("getResult", signature = c(x = "MgnifyClient"), function(
     # Get TreeSE objects
     tse_list <- llply(accession, function(x) {
             .mgnify_get_single_analysis_treese(
-                client, x, use.cache = use.cache, taxa.su = taxa.su,
-                get.tree = get.tree, ...)
+                client, x, use.cache = use.cache, taxa.su = taxa.su, ...)
     }, .progress = verbose)
     # The sample_data has been corrupted by doing the merge (names get messed
     # up and duplicated), so just regrab it with another lapply/rbind
@@ -383,7 +381,13 @@ setMethod("getResult", signature = c(x = "MgnifyClient"), function(
 #' @importFrom TreeSummarizedExperiment rowTree
 .mgnify_get_single_analysis_treese <- function(
         client = NULL, accession, use.cache = TRUE, downloadDIR = NULL,
-        taxa.su = "SSU", get.tree = FALSE, ...){
+        taxa.su = "SSU", get.tree = TRUE, ...){
+    ############################### INPUT CHECK ################################
+    if( !.is_a_bool(get.tree) ){
+        stop("'get.tree' must be TRUE or FALSE.",
+             call. = FALSE)
+    }
+    ############################# INPUT CHECK END ##############################
     # Get the metadata related to analysis
     metadata_df <- .mgnify_get_single_analysis_metadata(
         client, accession, use.cache=use.cache, ...)
@@ -438,8 +442,10 @@ setMethod("getResult", signature = c(x = "MgnifyClient"), function(
         unlink(biom_path)
     }
     # Download the file from the database to specific file path
+    fetched_from_url <- FALSE
     if( !file.exists(biom_path) ){
         res <- GET(biom_url, write_disk(biom_path, overwrite = TRUE))
+        fetched_from_url <- TRUE
         # If the file was not successfully downloaded
         if( res$status_code != 200 ){
             warning(
@@ -456,6 +462,11 @@ setMethod("getResult", signature = c(x = "MgnifyClient"), function(
     tse <- loadFromBiom(
         biom_path, removeTaxaPrefixes = TRUE, rankFromPrefix = TRUE,
         remove.artifacts = TRUE)
+    # If the file was not in store already but fetched from database, and cache
+    # storing is disabled
+    if( fetched_from_url && !use.cache ){
+        unlink(biom_path)
+    }
     # TreeSE has sample ID as its colnames. Rename so that it is the accession ID.
     colData(tse)[["biom_sample_id"]] <- colnames(tse)
     colnames(tse) <- accession
@@ -483,22 +494,27 @@ setMethod("getResult", signature = c(x = "MgnifyClient"), function(
                 unlink(tree_path)
             }
             # Download the file from the database to specific file path
+            fetched_from_url <- FALSE
             if( !file.exists(tree_path) ){
                 res <- GET(tree_url, write_disk(tree_path, overwrite = TRUE))
+                fetched_from_url <- TRUE
                 # If the file was not successfully downloaded
                 if( res$status_code != 200 ){
                     warning(
                         tree_url, ": ", content(res, ...)$errors[[1]]$detail,
                         " A phylogenetic tree listed in 'accession' is ",
                         "missing from the output.", call. = FALSE)
-                    # Remove the downloaded file
-                    unlink(tree_path)
                 }
             }
             # Add the tree to TreeSE object
-            if( !file.exists(tree_path) ){
+            if( file.exists(tree_path) ){
                 row_tree <- read.tree(tree_path)
                 rowTree(tse) <- row_tree
+                # If the file was not in store already but fetched from database,
+                # and cache storing is disabled
+                if( fetched_from_url && !use.cache ){
+                    unlink(biom_path)
+                }
             }
         }
     }
@@ -631,8 +647,10 @@ setMethod("getResult", signature = c(x = "MgnifyClient"), function(
             }
             return(list(type=cur_type, data=temp))
         })
-        # Add data types to data as names
-        cur_type <- unlist(lapply(parsed_results, function(x) x$type))
+        # Add data types to data as names (taxonomy might have 2 data types if NULL
+        # because these both 2 data types are tried to fetch)
+        cur_type <- unlist(lapply(parsed_results, function(x)
+            ifelse( length(x$type) > 1, x$type[[1]], x$type)))
         parsed_results <- lapply(parsed_results, function(x) x$data)
         names(parsed_results) <- cur_type
     }else{
